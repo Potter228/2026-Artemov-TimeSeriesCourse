@@ -17,7 +17,7 @@ def read_ts(file_path: str) -> np.ndarray:
     ts: time series data
     """
 
-    ts = pd.read_csv(file_path, header=None, delim_whitespace=True)
+    ts = pd.read_csv(file_path, header=None, sep=r'\s+')
     
     return ts.to_numpy()
 
@@ -36,7 +36,11 @@ def z_normalize(ts: np.ndarray) -> np.ndarray:
     norm_ts: z-normalized time series
     """
 
-    norm_ts = (ts - np.mean(ts, axis=0)) / np.std(ts, axis=0)
+    ts = np.asarray(ts, dtype=float)
+    std = np.std(ts, axis=0)
+    if np.any(std == 0):
+        raise ValueError("Z-normalization is undefined for constant series")
+    norm_ts = (ts - np.mean(ts, axis=0)) / std
 
     return norm_ts
 

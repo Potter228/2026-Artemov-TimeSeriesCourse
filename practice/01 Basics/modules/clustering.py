@@ -16,7 +16,7 @@ class TimeSeriesHierarchicalClustering:
     ----------
     n_clusters: number of clusters
     method: linkage criterion.
-            Options: {single, complete, average, weighted}
+            Options: {single, complete, average}
     """
 
     def __init__(self, n_clusters: int = 3, method: str = 'complete') -> None:
@@ -66,7 +66,12 @@ class TimeSeriesHierarchicalClustering:
         self: the fitted model
         """
 
-       # INSERT YOUR CODE
+        self.model = AgglomerativeClustering(
+            n_clusters=self.n_clusters, metric='precomputed', linkage=self.method,
+            compute_full_tree=True, compute_distances=True)
+        self.model.fit(distance_matrix)
+        self.labels_ = self.model.labels_
+        self.linkage_matrix = self._create_linkage_matrix()
 
         return self
 
@@ -152,6 +157,14 @@ class TimeSeriesHierarchicalClustering:
         plt.ylabel("Cluster")
         plt.title(title, fontsize=16, weight='bold')
 
-        ddata = dendrogram(self.linkage_matrix, orientation="left", color_threshold=sorted(self.model.distances_)[-2], show_leaf_counts=True)
+        # Place the color threshold between merges for the requested cluster count.
+        distances = np.sort(self.model.distances_)
+        if self.n_clusters == 1:
+            threshold = np.nextafter(distances[-1], np.inf)
+        elif self.n_clusters >= max_cluster:
+            threshold = 0
+        else:
+            threshold = (distances[-self.n_clusters] + distances[-self.n_clusters + 1]) / 2
+        ddata = dendrogram(self.linkage_matrix, orientation="left", color_threshold=threshold, show_leaf_counts=True)
 
         self._draw_timeseries_allclust(df, labels, ddata["leaves"], gs, ts_hspace)

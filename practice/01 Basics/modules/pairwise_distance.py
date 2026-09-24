@@ -47,9 +47,12 @@ class PairwiseDistance:
         dict_func: function reference
         """
 
-        dist_func = None
-
-        # INSERT YOUR CODE
+        if self.metric == 'euclidean':
+            dist_func = norm_ED_distance if self.is_normalize else ED_distance
+        elif self.metric == 'dtw':
+            dist_func = DTW_distance
+        else:
+            raise ValueError(f"Unknown metric: {self.metric}")
 
         return dist_func
 
@@ -66,9 +69,22 @@ class PairwiseDistance:
         matrix_values: distance matrix
         """
         
+        input_data = np.asarray(input_data, dtype=float)
+        if input_data.ndim != 2 or input_data.shape[1] == 0:
+            raise ValueError("Expected a matrix with one nonempty time series per row")
+        if not np.isfinite(input_data).all():
+            raise ValueError("Time series must contain finite values")
         matrix_shape = (input_data.shape[0], input_data.shape[0])
         matrix_values = np.zeros(shape=matrix_shape)
         
-        # INSERT YOUR CODE
+        dist_func = self._choose_distance()
+        if self.is_normalize and np.any(input_data.std(axis=1) == 0):
+            raise ValueError("Z-normalization is undefined for constant series")
+        if self.is_normalize and self.metric != 'euclidean':
+            input_data = np.array([z_normalize(ts) for ts in input_data])
+        for i in range(len(input_data)):
+            for j in range(i + 1, len(input_data)):
+                matrix_values[i, j] = dist_func(input_data[i], input_data[j])
+                matrix_values[j, i] = matrix_values[i, j]
 
         return matrix_values
