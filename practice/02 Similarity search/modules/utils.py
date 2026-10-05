@@ -17,7 +17,7 @@ def read_ts(file_path: str) -> np.ndarray:
     ts: time series data
     """
 
-    ts = pd.read_csv(file_path, header=None, delim_whitespace=True)
+    ts = pd.read_csv(file_path, header=None, sep=r'\s+')
     
     return ts.to_numpy()
 
@@ -36,7 +36,13 @@ def z_normalize(ts: np.ndarray) -> np.ndarray:
     norm_ts: z-normalized time series
     """
 
-    norm_ts = (ts - np.mean(ts, axis=0)) / np.std(ts, axis=0)
+    ts = np.asarray(ts, dtype=float)
+    if ts.size == 0 or not np.isfinite(ts).all():
+        raise ValueError("Expected nonempty finite values")
+    std = np.std(ts, axis=0)
+    if np.any(std == 0):
+        raise ValueError("Z-normalization is undefined for constant series")
+    norm_ts = (ts - np.mean(ts, axis=0)) / std
 
     return norm_ts
 
@@ -56,17 +62,12 @@ def sliding_window(ts: np.ndarray, window: int, step: int = 1) -> np.ndarray:
     subs_matrix: matrix of subsequences
     """
     
-    n = ts.shape[0]
-    N = math.ceil((n-window+1)/step)
+    ts = np.asarray(ts, dtype=float)
+    if ts.ndim != 1 or not 0 < window <= len(ts) or step < 1:
+        raise ValueError("Expected a 1D series, valid window length, and positive step")
+    # A view avoids copying millions of overlapping windows.
+    return np.lib.stride_tricks.sliding_window_view(ts, window)[::step]
 
-    subs_matrix = np.zeros((N, window))
-
-    for i in range(N):
-        start_idx = i*step
-        end_idx = start_idx + window
-        subs_matrix[i] = ts[start_idx:end_idx]
-
-    return subs_matrix
 
 
 def random_walk(n: int) -> np.ndarray:

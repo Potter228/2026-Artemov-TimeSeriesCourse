@@ -5,8 +5,36 @@ import timeit
 from IPython.display import display
 
 from modules.distance_profile import brute_force
+from modules.metrics import norm_ED_distance
 from modules.bestmatch import NaiveBestMatchFinder, UCR_DTW
 from modules.plots import mplot2d
+
+
+def mass1_distance_profile(ts: np.ndarray, query: np.ndarray) -> np.ndarray:
+    """Restore the first window omitted by mass-ts 0.1.4's MASS 1."""
+    profile = np.real(mts.mass(ts, query))
+    if len(profile) == len(ts) - len(query):
+        profile = np.r_[norm_ED_distance(ts[:len(query)], query), profile]
+    return profile
+
+
+def mass3_distance_profile(ts: np.ndarray, query: np.ndarray, segment_len: int) -> np.ndarray:
+    """Fix the duplicated/missing tail window in mass-ts 0.1.4's MASS 3."""
+    n, m = len(ts), len(query)
+    if segment_len < m:
+        raise ValueError("The segment must be at least as long as the query")
+    if n < segment_len:
+        # One shorter segment needs no partitioning; MASS 2 computes it.
+        return np.real(mts.mass2(ts, query))
+    profile = np.real(mts.mass3(ts, query, segment_len))
+    step = segment_len - m + 1
+    last_segment_start = ((n - segment_len) // step) * step
+    full_windows = last_segment_start + step
+    if last_segment_start + segment_len < n:
+        # The library's tail starts one point too early and ends one too early.
+        profile = np.r_[profile[:full_windows], profile[full_windows + 1:],
+                        norm_ED_distance(ts[-m:], query)]
+    return profile
 
 
 def _get_param_values(exp_params: dict, param: str) -> list:
@@ -51,6 +79,8 @@ def _run_experiment_dist_profile(algorithm: str, data: dict, exp_params: dict, a
     m_list = _get_param_values(exp_params, 'm')
 
     times = []
+    if algorithm == 'brute_force':
+        brute_force(np.arange(16, dtype=float), np.arange(4, dtype=float))
 
     for n in n_list:
         for m in m_list:
@@ -58,13 +88,16 @@ def _run_experiment_dist_profile(algorithm: str, data: dict, exp_params: dict, a
                 case 'brute_force':
                     runtime_code = f"brute_force(data['ts']['{n}'], data['query']['{m}'])"
                 case 'mass3': 
-                    runtime_code = f"mts.mass3(data['ts']['{n}'], data['query']['{m}'], alg_params['segment_len'])"
-                case 'mass' | 'mass2':
+                    runtime_code = f"mass3_distance_profile(data['ts']['{n}'], data['query']['{m}'], alg_params['segment_len'])"
+                case 'mass':
+                    runtime_code = f"mass1_distance_profile(data['ts']['{n}'], data['query']['{m}'])"
+                case 'mass2':
                     runtime_code = f"mts.{algorithm}(data['ts']['{n}'], data['query']['{m}'])"    
             try:
-                time = timeit.timeit(stmt=runtime_code, number=1, globals={**globals(), **locals()})
-            except:
-                time = np.nan
+                time = np.median(timeit.repeat(stmt=runtime_code, number=1, repeat=3,
+                                             globals={**globals(), **locals()}))
+            except Exception as exc:
+                raise RuntimeError(f"{algorithm} failed for n={n}, m={m}") from exc
 
             times.append(time)
     
@@ -92,6 +125,8 @@ def _run_experiment_best_match(algorithm: str, data: dict, exp_params: dict, alg
     r_list = _get_param_values(exp_params, 'r')
 
     times = []
+    if algorithm == 'naive':
+        NaiveBestMatchFinder().perform(np.arange(16, dtype=float), np.arange(4, dtype=float))
 
     for r in r_list:
         r_times = []
@@ -99,16 +134,17 @@ def _run_experiment_best_match(algorithm: str, data: dict, exp_params: dict, alg
             for m in m_list:
                 match algorithm:
                     case 'naive':
-                        naive_bestmatch_model = NaiveBestMatchFinder(alg_params['excl_zone_frac'], alg_params['topK'], alg_params['normalize'], r)
+                        naive_bestmatch_model = NaiveBestMatchFinder(alg_params['excl_zone_frac'], alg_params['topK'], alg_params['is_normalize'], r)
                         runtime_code = f"naive_bestmatch_model.perform(data['ts']['{n}'], data['query']['{m}'])"
                     case 'ucr-dtw':
-                        ucr_dtw_bestmatch_model = UCR_DTW(alg_params['excl_zone_frac'], alg_params['topK'], alg_params['normalize'], r)
+                        ucr_dtw_bestmatch_model = UCR_DTW(alg_params['excl_zone_frac'], alg_params['topK'], alg_params['is_normalize'], r)
                         runtime_code = f"ucr_dtw_bestmatch_model.perform(data['ts']['{n}'], data['query']['{m}'])"
 
                 try:
-                    time = timeit.timeit(stmt=runtime_code, number=1, globals={**globals(), **locals()})
-                except:
-                    time = np.nan
+                    time = np.median(timeit.repeat(stmt=runtime_code, number=1, repeat=3,
+                                                 globals={**globals(), **locals()}))
+                except Exception as exc:
+                    raise RuntimeError(f"{algorithm} failed for n={n}, m={m}, r={r}") from exc
 
                 r_times.append(time)
 

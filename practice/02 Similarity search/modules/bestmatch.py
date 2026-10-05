@@ -1,162 +1,110 @@
 import numpy as np
 import math
 import copy
+from numba import njit
 
 from modules.utils import sliding_window, z_normalize
-from modules.metrics import DTW_distance
+from modules.metrics import DTW_distance, _dtw_cost
 
 
 def apply_exclusion_zone(array: np.ndarray, idx: int, excl_zone: int) -> np.ndarray:
-    """
-    Apply an exclusion zone to an array (inplace)
-    
-    Parameters
-    ----------
-    array: the array to apply the exclusion zone to
-    idx: the index around which the window should be centered
-    excl_zone: size of the exclusion zone
-    
-    Returns
-    -------
-    array: the array which is applied the exclusion zone
-    """
-
-    zone_start = max(0, idx - excl_zone)
-    zone_stop = min(array.shape[-1], idx + excl_zone)
-    array[zone_start : zone_stop + 1] = np.inf
-
+    """Exclude indices from idx-excl_zone through idx+excl_zone, inclusive."""
+    if array.ndim != 1 or not 0 <= idx < len(array) or excl_zone < 0:
+        raise ValueError("Invalid profile, index, or exclusion zone")
+    start = max(0, idx - excl_zone)
+    stop = min(len(array), idx + excl_zone + 1)
+    array[start:stop] = np.inf
     return array
 
 
-def topK_match(dist_profile: np.ndarray, excl_zone: int, topK: int = 3, max_distance: float = np.inf) -> dict:
-    """
-    Search the topK match subsequences based on distance profile
-    
-    Parameters
-    ----------
-    dist_profile: distances between query and subsequences of time series
-    excl_zone: size of the exclusion zone
-    topK: count of the best match subsequences
-    max_distance: maximum distance between query and a subsequence `S` for `S` to be considered a match
-    
-    Returns
-    -------
-    topK_match_results: dictionary containing results of algorithm
-    """
-
-    topK_match_results = {
-        'indices': [],
-        'distances': []
-    } 
-
-    dist_profile_len = len(dist_profile)
-    dist_profile = np.copy(dist_profile).astype(float)
-
-    for k in range(topK):
-        min_idx = np.argmin(dist_profile)
-        min_dist = dist_profile[min_idx]
-
-        if (np.isnan(min_dist)) or (np.isinf(min_dist)) or (min_dist > max_distance):
+def topK_match(dist_profile: np.ndarray, excl_zone: int, topK: int = 3,
+               max_distance: float = np.inf) -> dict:
+    """Greedily select the nearest windows, excluding trivial matches."""
+    profile = np.asarray(dist_profile, dtype=float).copy()
+    if profile.ndim != 1 or topK < 0 or excl_zone < 0:
+        raise ValueError("Expected a 1D profile and nonnegative topK/exclusion zone")
+    profile[~np.isfinite(profile)] = np.inf
+    results = {'indices': [], 'distances': []}
+    for _ in range(topK):
+        if profile.size == 0:
             break
-
-        dist_profile = apply_exclusion_zone(dist_profile, min_idx, excl_zone)
-
-        topK_match_results['indices'].append(min_idx)
-        topK_match_results['distances'].append(min_dist)
-
-    return topK_match_results
+        idx = int(np.argmin(profile))
+        distance = float(profile[idx])
+        if not np.isfinite(distance) or distance > max_distance:
+            break
+        results['indices'].append(idx)
+        results['distances'].append(distance)
+        apply_exclusion_zone(profile, idx, excl_zone)
+    return results
 
 
 class BestMatchFinder:
-    """
-    Base Best Match Finder
-    
-    Parameters
-    ----------
-    excl_zone_frac: exclusion zone fraction
-    topK: number of the best match subsequences
-    is_normalize: z-normalize or not subsequences before computing distances
-    r: warping window size
-    """
+    """Common search parameters: exclusion fraction, topK, normalization, r."""
 
-    def __init__(self, excl_zone_frac: float = 1, topK: int = 3, is_normalize: bool = True, r: float = 0.05) -> None:
-        """ 
-        Constructor of class BestMatchFinder
-        """
-
-        self.excl_zone_frac: float = excl_zone_frac
-        self.topK: int = topK
-        self.is_normalize: bool = is_normalize
-        self.r: float = r
-
+    def __init__(self, excl_zone_frac: float = 1, topK: int = 3,
+                 is_normalize: bool = True, r: float = 0.05) -> None:
+        if not 0 <= excl_zone_frac <= 1 or not 0 <= r <= 1 or topK < 1:
+            raise ValueError("Invalid search parameters")
+        self.excl_zone_frac = excl_zone_frac
+        self.topK = topK
+        self.is_normalize = is_normalize
+        self.r = r
 
     def _calculate_excl_zone(self, m: int) -> int:
-        """
-        Calculate the exclusion zone
-        
-        Parameters
-        ----------
-        m: length of subsequence
-        
-        Returns
-        -------
-        excl_zone: exclusion zone
-        """
-
-        excl_zone = math.ceil(m * self.excl_zone_frac)
-
-        return excl_zone
-
+        return math.ceil(m * self.excl_zone_frac)
 
     def perform(self):
-
         raise NotImplementedError
 
 
+@njit
+def _naive_dtw_profile(windows: np.ndarray, query: np.ndarray,
+                       is_normalize: bool, radius: int) -> np.ndarray:
+    """Compute DTW for every candidate without lower-bound pruning."""
+    profile = np.full(len(windows), np.inf)
+    m = len(query)
+    candidate = np.empty(m)
+    for i in range(len(windows)):
+        mean, std = 0.0, 1.0
+        if is_normalize:
+            for j in range(m):
+                mean += windows[i, j]
+            mean /= m
+            variance = 0.0
+            for j in range(m):
+                variance += (windows[i, j] - mean) ** 2
+            std = np.sqrt(variance / m)
+            if std == 0:
+                continue
+        for j in range(m):
+            candidate[j] = (windows[i, j] - mean) / std
+        profile[i] = _dtw_cost(candidate, query, radius)
+    return profile
+
+
 class NaiveBestMatchFinder(BestMatchFinder):
-    """
-    Naive Best Match Finder
-    """
-
-    def __init__(self, excl_zone_frac: float = 1, topK: int = 3, is_normalize: bool = True, r: float = 0.05):
-        super().__init__(excl_zone_frac, topK, is_normalize, r)
-        """ 
-        Constructor of class NaiveBestMatchFinder
-        """
-
+    """Exhaustive DTW subsequence search followed by topK selection."""
 
     def perform(self, ts_data: np.ndarray, query: np.ndarray) -> dict:
-        """
-        Search subsequences in a time series that most closely match the query using the naive algorithm
-        
-        Parameters
-        ----------
-        ts_data: time series
-        query: query, shorter than time series
-
-        Returns
-        -------
-        best_match: dictionary containing results of the naive algorithm
-        """
-
-        query = copy.deepcopy(query)
-        if (len(ts_data.shape) != 2): # time series set
-            ts_data = sliding_window(ts_data, len(query))
-
-        N, m = ts_data.shape
-        excl_zone = self._calculate_excl_zone(m)
-
-        dist_profile = np.ones((N,))*np.inf
-        bsf = np.inf
-
-        bestmatch = {
-            'index' : [],
-            'distance' : []
-        }
-        
-        # INSERT YOUR CODE
-
-        return bestmatch
+        ts_data = np.asarray(ts_data, dtype=float)
+        query = np.asarray(query, dtype=float)
+        if query.ndim != 1 or query.size == 0 or ts_data.ndim not in (1, 2):
+            raise ValueError("Expected a nonempty 1D query and a series or window matrix")
+        if not (np.isfinite(ts_data).all() and np.isfinite(query).all()):
+            raise ValueError("Time series must contain finite values")
+        if ts_data.ndim == 1:
+            windows = sliding_window(ts_data, len(query))
+        else:
+            windows = ts_data
+        if windows.shape[0] == 0 or windows.shape[1] != len(query):
+            raise ValueError("Windows must be nonempty and match the query length")
+        if self.is_normalize:
+            query = z_normalize(query)
+        self.dist_profile_ = _naive_dtw_profile(
+            windows, query, self.is_normalize, int(self.r * len(query)))
+        # Keep the full profile: early pruning by a changing topK threshold can
+        # incorrectly discard windows that become eligible after exclusions.
+        return topK_match(self.dist_profile_, self._calculate_excl_zone(len(query)), self.topK)
 
 
 class UCR_DTW(BestMatchFinder):
