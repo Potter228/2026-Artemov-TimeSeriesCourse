@@ -1,200 +1,131 @@
+"""Two-pass DRAG with exact z-normalized Euclidean distances.
+
+Numba compiles the scans; only candidates surviving both directional passes
+need an exact nearest-neighbor distance during refinement. The default
+exclusion radius is STUMPY's ceil(m / 4), as in the supplied lab template.
+"""
 import numpy as np
+from numba import njit
 from stumpy import core, config
 
-def _get_chunks_ranges(a, shift=None):
-    """
-    This function takes an array that contains only integer numbers in ascending order, and return the
-    `(inclusive) start index` and `(exclusive) stop index + shift` for each continuous segment of array.
-    
-    Parameters
-    --------
-    a : numpy.ndarray
-        1-dim array that contains integer numbers in ascending order.
-    
-    shift : int, default None
-        an integer number by which the stop index of each segement should be shifted. If None, no shift will be applied.
-        
-    Returns
-    -------
-    out : numpy.ndarray
-        a 2-dim numpy array. The first column is the (inclusive) start index of each segment. The second column is the
-        (exclusive) stop index shifted by `shift` units.
-    """    
-    repeats = np.full(len(a), 2)
-    diff_is_one = np.diff(a) == 1
-    repeats[1:] -= diff_is_one
-    repeats[:-1] -= diff_is_one
-    out = np.repeat(a, repeats).reshape(-1, 2)
-    out[:, 1] += 1
-    
-    if shift is not None:
-        out[:, 1] += shift
 
-    return out
+def _get_chunks_ranges(a, shift=None):
+    a = np.asarray(a, dtype=int)
+    if not len(a):
+        return np.empty((0, 2), dtype=int)
+    cuts = np.flatnonzero(np.diff(a) != 1) + 1
+    starts = np.r_[0, cuts]
+    stops = np.r_[cuts - 1, len(a) - 1]
+    return np.column_stack((a[starts], a[stops] + 1 + (shift or 0)))
+
+
+def _windows(T, m, M_T, sigma):
+    windows = np.lib.stride_tricks.sliding_window_view(T, m)
+    constant = np.asarray(sigma) == 0
+    scale = np.where(constant, 1.0, sigma)
+    normalized = (windows - np.asarray(M_T)[:, None]) / scale[:, None]
+    return np.ascontiguousarray(normalized), constant
+
+
+@njit(cache=True)
+def _squared_distance(windows, constant, i, j, bound):
+    if constant[i] and constant[j]:
+        return 0.0
+    if constant[i] or constant[j]:
+        return float(windows.shape[1])
+    distance = 0.0
+    for k in range(windows.shape[1]):
+        distance += (windows[i, k] - windows[j, k]) ** 2
+        if distance > bound:
+            break
+    return distance
+
+
+@njit(cache=True)
+def _directional_scan(windows, constant, candidates, radius, threshold, right):
+    size = len(windows)
+    for i in range(size):
+        if not candidates[i]:
+            continue
+        start, stop = (i + radius + 1, size) if right else (0, max(0, i - radius))
+        for j in range(start, stop):
+            if _squared_distance(windows, constant, i, j, threshold) < threshold:
+                candidates[i] = False
+                break
+    return candidates
+
 
 def find_candidates(T, m, M_T, Σ_T, r, init_cands=None, right=True, finite=False):
+    """Keep windows with no nontrivial right (left) neighbor closer than r.
+
+    A candidate without a neighbor on this side survives until the other pass.
+    init_cands restricts possible discords, never their comparison neighbors.
     """
-    For a time series T, this function finds a set of candidates whose distance to all of their right (left) neighbors 
-    is at least `r` when parameter `right` is TRUE (FALSE). If there is no such candidate, all elements of is_cands
-    becomes False.
-    
-    Parameters
-    ---------
-    T : numpy.ndarray
-        The time series or sequence from which the candidates are being selected.
-    
-    m : int
-        Window size
-    
-    M_T : ndarray
-        Sliding mean of `T`
-    
-    Σ_T : ndarray
-        Sliding standard deviation of `T`
-    
-    r : float 
-        An estimate of discord_dist. The selected candidates retuned by this function have distances of at least `r` 
-        to all of their right(left) neighbors when input `right` is set to True(False).
-        
-        Choosing different values for `r`can affect the performance of the algorithm 
-        (see Fig. 5 of the paper). For instance, choosing a very large value for `r` may result in no candidates 
-        while choosing a very small value may result in a lot of candidates.  
-        (note: `r` is passed to this private function when it is called inside the top-level function `_discords`).
-    
-    init_cands : numpy.ndarray, default None
-        is a 1-dim boolean array, with shape=(k,) where `k` is the total number of subsquences in the time series. 
-        `init_cands[i]` is True if the subsequence with start index `i` is considered as one of the 
-        prospective candidates.
-        
-    right : bool, default True
-        If True (False), candidates returned by the function are guaranteed to have at least the distance of `r` 
-        to all of their 'right`('left') neighbors.
-    
-    finite : bool, default False
-        If True, subsequence with infinite values will not be considered as candidates.   
-    
-    Returns
-    --------
-    is_cands : numpy.ndarray
-        is a 1-dim boolean array, with shape=(k,) where `k` is the total number of subsquences in the time series. 
-        `is_cands[i]` is True if the subsequence with start index `i` has minimum distance of `r` to all of its 
-        right (left) neighbors when right is True (False).
-    
-    NOTE
-    -------    
-    Unlike the MERLIN paper where the exclusion zone is m, the default exclusion zone considered here
-    is the STUMPY default config m/4. This can be changed by setting config.STUMPY_EXCL_ZONE_DENOM.
-    """    
-    excl_zone = int(np.ceil(m / config.STUMPY_EXCL_ZONE_DENOM))
-    
-    k = T.shape[0] - m + 1 
-    
-    is_cands = np.ones(k, dtype=bool)
-    if init_cands is not None:
-        is_cands[:] = init_cands
-    
-    T_subseq_isfinite = np.isfinite(M_T)
-    if not finite:
-        T_subseq_isfinite[:] = True
-    is_cands[~T_subseq_isfinite] = False
-    
-    for i in np.flatnonzero(T_subseq_isfinite):
-        if np.all(is_cands == False):
-            break
-            
-        cands_idx = np.flatnonzero(is_cands)
-        
-        if right: 
-            non_trivial_cands_idx = cands_idx[cands_idx < max(0, i - excl_zone)]
-        else:
-            non_trivial_cands_idx = cands_idx[cands_idx > i + excl_zone]
-        
-        if len(non_trivial_cands_idx) > 0:        
-            cand_idx_chunks = _get_chunks_ranges(non_trivial_cands_idx, shift=m-1) 
-            #shift=m-1: convert from subsequence space to time series space
-            
-            for start, stop in cand_idx_chunks:
-                QT = core._sliding_dot_product(T[i:i+m], T[start:stop]) 
-                D = core._mass(T[i:i+m], T[start:stop], QT, M_T[i], Σ_T[i], M_T[start:stop-m+1], Σ_T[start:stop-m+1])
+    T = np.asarray(T, dtype=float)
+    if not np.isfinite(r) or r < 0:
+        raise ValueError('r must be finite and nonnegative')
+    k = len(T) - m + 1
+    candidates = np.ones(k, dtype=bool) if init_cands is None else np.array(init_cands, dtype=bool, copy=True)
+    if candidates.shape != (k,):
+        raise ValueError('Candidate mask has an invalid shape')
+    candidates &= np.isfinite(M_T) & np.isfinite(Σ_T)
+    windows, constant = _windows(T, m, M_T, Σ_T)
+    radius = int(np.ceil(m / config.STUMPY_EXCL_ZONE_DENOM))
+    return _directional_scan(windows, constant, candidates, radius, float(r) ** 2, bool(right))
 
-                mask = np.flatnonzero(D < r)   
-                is_cands[start:stop-m+1][mask] = False
 
-                if len(mask):
-                    is_cands[i] = False
-        
-    return is_cands
+@njit(cache=True)
+def _nearest_candidates(windows, constant, candidates, radius):
+    profile = np.full(len(windows), -np.inf)
+    neighbors = np.full(len(windows), -1, dtype=np.int64)
+    for i in range(len(windows)):
+        if not candidates[i]:
+            continue
+        nearest = np.inf
+        for j in range(len(windows)):
+            if abs(i - j) <= radius:
+                continue
+            distance = _squared_distance(windows, constant, i, j, nearest)
+            if distance < nearest:
+                nearest = distance
+                neighbors[i] = j
+        if np.isfinite(nearest):
+            profile[i] = np.sqrt(nearest)
+    return profile, neighbors
+
 
 def refine_candidates(T, m, M_T, Σ_T, is_cands):
-    """
-    For a time series `T`, this function searches the candidates (i.e. subsequences indicated by `is_cands`) and 
-    return candidates discords in descending order according to their distance to their nearest neighbor.
-    After finding the top-discord among candidates, the discord subsequence and its trivial neighbors will be excluded 
-    from candidates before finding the next top-discord.
- 
-    Parameters
-    ---------
-    T : numpy.ndarray
-        The time series or sequence from which the top discord (out of selected candidates) is discovered. 
-    
-    m : int
-        Window size
-    
-    M_T : numpy.ndarray
-        Sliding mean of `T`
-    
-    Σ_T : numpy.ndarray
-        Sliding standard deviation of `T`
-    
-    is_cands : numpy.ndarray
-        is a 1-dim boolean array, with shape=(k,) where `k` is the total number of subsquences in the time series. 
-        when `is_cands[i]` is True, a subsequence with start index `i` is a discord candidate.
-     
-    Returns
-    ---------
-    out : numpy.ndarray
-        is a 2-dim array with three columns. The first column is indices of discords, sorted according to their 
-        corresponding distances to their nearest neighbor, provided in the second column. 
-        The third column is the indices of the discords' nearest neighbor. 
-    """    
-    excl_zone = int(np.ceil(m / config.STUMPY_EXCL_ZONE_DENOM)) 
-    k = T.shape[0] - m + 1
-    
-    P = np.full(k, np.NINF, dtype=np.float64) # matrix profile
-    I = np.full(k, -1, dtype=np.int64) # index of Nearest Neighbor 
-    
-    for idx in np.flatnonzero(is_cands): 
-        Q = T[idx:idx+m]
-        QT = core._sliding_dot_product(Q, T)
-        D = core._mass(Q, T, QT, M_T[idx], Σ_T[idx], M_T, Σ_T)
-        core.apply_exclusion_zone(D, idx, excl_zone, val=np.inf)
-        
-        nn_idx = np.argmin(D)  
-        if D[nn_idx] == np.inf:
-            nn_idx = -1
-        P[idx] = D[nn_idx]
-        I[idx] = nn_idx
-    
-    discords_idx = []
-    discords_dist = []
-    discords_nn_idx = [] 
-    while np.any(P>=0):
-        idx = np.argmax(P)
-        discords_idx.append(idx)
-        discords_dist.append(P[idx])
-        discords_nn_idx.append(I[idx])  
-        core.apply_exclusion_zone(P, idx, excl_zone, np.NINF)
-     
-    return discords_idx, discords_dist, discords_nn_idx
+    """Rank surviving candidates and suppress nearby copies of each discord."""
+    windows, constant = _windows(np.asarray(T, dtype=float), m, M_T, Σ_T)
+    candidates = np.asarray(is_cands, dtype=bool)
+    if candidates.shape != (len(windows),):
+        raise ValueError('Candidate mask has an invalid shape')
+    radius = int(np.ceil(m / config.STUMPY_EXCL_ZONE_DENOM))
+    profile, neighbors = _nearest_candidates(windows, constant, candidates, radius)
+    indices, distances, nn_indices = [], [], []
+    while np.isfinite(profile).any():
+        idx = int(np.argmax(profile))
+        indices.append(idx)
+        distances.append(float(profile[idx]))
+        nn_indices.append(int(neighbors[idx]))
+        profile[max(0, idx - radius):idx + radius + 1] = -np.inf
+    return indices, distances, nn_indices
 
-def DRAG(data, m, r, include= None):
-    if include is None:
-        include = np.ones(len(data)-m+1, dtype=bool)
-    else:
-        include=include[:len(data)-m+1]
-    T, M_T, Σ_T = core.preprocess(data, m)
-    is_cands = find_candidates(T, m, M_T, Σ_T, r, init_cands=include, right=True)
-    cand_index = np.flatnonzero(is_cands)
-    is_cands = find_candidates(T, m, M_T, Σ_T, r, init_cands=is_cands, right=False)
-    cands = np.flatnonzero(is_cands)
-    return refine_candidates(T, m, M_T, Σ_T, is_cands)
+
+def DRAG(data, m, r, include=None):
+    """Gather on the right, clean on the left, then refine range discords."""
+    data = np.asarray(data, dtype=float)
+    if data.ndim != 1 or not np.isfinite(data).all():
+        raise ValueError('Expected a finite one-dimensional series')
+    if not isinstance(m, (int, np.integer)) or not 3 <= m <= len(data):
+        raise ValueError('Invalid window length')
+    if not np.isfinite(r) or r < 0:
+        raise ValueError('r must be finite and nonnegative')
+    if include is not None:
+        include = np.asarray(include, dtype=bool)[:len(data) - m + 1].copy()
+        if include.shape != (len(data) - m + 1,):
+            raise ValueError('include has an invalid shape')
+    T, M_T, Σ_T, *_ = core.preprocess(data, m)
+    candidates = find_candidates(T, m, M_T, Σ_T, r, include, right=True)
+    candidates = find_candidates(T, m, M_T, Σ_T, r, candidates, right=False)
+    return refine_candidates(T, m, M_T, Σ_T, candidates)

@@ -1,33 +1,57 @@
 """Discord discovery routines."""
 import numpy as np
+from numba import njit
 from .visit_registry import VisitRegistry
 from .distance import early_abandoned_euclidean
 from .znorm import znorm
 
 
+@njit(cache=True)
+def _brute_force_profile(windows, win_size):
+    """Exact NN search; all non-overlapping pairs are considered, without SAX."""
+    n_windows, m = windows.shape
+    profile = np.full(n_windows, np.inf)
+    for i in range(n_windows):
+        nearest_squared = np.inf
+        for j in range(n_windows):
+            if abs(i - j) < win_size:
+                continue
+            squared = 0.0
+            for k in range(m):
+                squared += (windows[i, k] - windows[j, k]) ** 2
+                if squared > nearest_squared:
+                    break
+            if squared < nearest_squared:
+                nearest_squared = squared
+        profile[i] = np.sqrt(nearest_squared)
+    return profile
+
+
 def find_discords_brute_force(series, win_size, num_discords=2, znorm_threshold=0.01):
-    """Early-abandoned distance-based discord discovery."""
-    discords = list()
+    """Exhaustive search with early-abandoned ED, compiled with Numba.
 
-    globalRegistry = VisitRegistry(len(series) - win_size + 1)
-    znorms = np.array([znorm(series[pos: pos + win_size], znorm_threshold) for pos in range(len(series) - win_size + 1)])
-
-    while len(discords) < num_discords:
-
-        bestDiscord = find_best_discord_brute_force(series, win_size,
-                                                    globalRegistry,
-                                                    znorms)
-
-        if -1 == bestDiscord[0]:
+    The exact NN profile is computed once and reused for topK selection.
+    Selected discord windows and each window's NN must not overlap.
+    JIT compilation should be warmed up before performance measurements.
+    """
+    series = np.asarray(series, dtype=float)
+    if series.ndim != 1 or not np.isfinite(series).all():
+        raise ValueError('Expected a finite one-dimensional series')
+    if not isinstance(win_size, (int, np.integer)) or not 1 <= win_size <= len(series):
+        raise ValueError('Invalid window length')
+    if not isinstance(num_discords, (int, np.integer)) or num_discords < 0:
+        raise ValueError('num_discords must be a nonnegative integer')
+    windows = np.array([znorm(series[i:i + win_size], znorm_threshold)
+                        for i in range(len(series) - win_size + 1)])
+    profile = _brute_force_profile(windows, win_size)
+    profile[~np.isfinite(profile)] = -np.inf
+    discords = []
+    for _ in range(num_discords):
+        i = int(np.argmax(profile))
+        if not np.isfinite(profile[i]):
             break
-
-        discords.append(bestDiscord)
-
-        mark_start = max(0, bestDiscord[0] - win_size + 1)
-        mark_end = bestDiscord[0] + win_size
-
-        globalRegistry.mark_visited_range(mark_start, mark_end)
-
+        discords.append((i, float(profile[i])))
+        profile[max(0, i - win_size + 1):i + win_size] = -np.inf
     return discords
 
 
