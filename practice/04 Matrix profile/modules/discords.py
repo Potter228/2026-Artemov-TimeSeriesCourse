@@ -1,30 +1,22 @@
 import numpy as np
-
-from modules.utils import *
+from modules.utils import apply_exclusion_zone
 
 
 def top_k_discords(matrix_profile: dict, top_k: int = 3) -> dict:
-    """
-    Find the top-k discords based on matrix profile
-
-    Parameters
-    ---------
-    matrix_profile: the matrix profile structure
-    top_k: number of discords
-
-    Returns
-    --------
-    discords: top-k discords (indices, distances to its nearest neighbor and the nearest neighbors indices)
-    """
- 
-    discords_idx = []
-    discords_dist = []
-    discords_nn_idx = []
-
-    # INSERT YOUR CODE
-
-    return {
-        'indices' : discords_idx,
-        'distances' : discords_dist,
-        'nn_indices' : discords_nn_idx
-        }
+    """Select profile maxima, suppressing neighboring window starts."""
+    if isinstance(top_k, bool) or not isinstance(top_k, (int, np.integer)) or top_k < 0:
+        raise ValueError('top_k must be a nonnegative integer.')
+    distances = np.asarray(matrix_profile['mp'], dtype=float).copy()
+    neighbors = np.asarray(matrix_profile['mpi'], dtype=int)
+    valid = np.isfinite(distances) & (neighbors >= 0) & (neighbors < len(distances))
+    distances[~valid] = -np.inf
+    indices, scores, nearest = [], [], []
+    for _ in range(int(top_k)):
+        idx = int(np.argmax(distances))
+        if not np.isfinite(distances[idx]):
+            break
+        indices.append(idx)
+        scores.append(float(distances[idx]))
+        nearest.append(int(neighbors[idx]))
+        apply_exclusion_zone(distances, idx, matrix_profile['excl_zone'], -np.inf)
+    return {'indices': indices, 'distances': scores, 'nn_indices': nearest}

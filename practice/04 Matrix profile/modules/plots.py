@@ -1,239 +1,93 @@
-import numpy as np
-import pandas as pd
 import math
-
-# for visualization
-import plotly
-from plotly.subplots import make_subplots
-from plotly.offline import init_notebook_mode
-import plotly.graph_objs as go
-import plotly.express as px
-plotly.offline.init_notebook_mode(connected=True)
+import numpy as np
+import matplotlib.pyplot as plt
 
 
-def plot_ts(ts: np.ndarrray, title: str = 'Input Time Series') -> None:
-    """
-    Plot the time series
+def _finish(fig):
+    """Keep saved notebook figures readable independently of editor theme."""
+    fig.set_facecolor('white')
+    for ax in fig.axes:
+        ax.set_facecolor('white')
+        ax.tick_params(colors='black')
+        ax.xaxis.label.set_color('black')
+        ax.yaxis.label.set_color('black')
+        ax.title.set_color('black')
+        for spine in ax.spines.values():
+            spine.set_color('#555555')
+        ax.grid(alpha=0.18, color='#777777')
+    plt.show()
 
-    Parameters
-    ----------
-    ts: time series
-    title: title of plot
-    """
 
-    n = ts.shape[0]
-
-    fig = go.Figure()
-
-    fig.add_trace(go.Scatter(x=np.arange(n), y=ts, line=dict(width=3)))
-
-    fig.update_xaxes(showgrid=False,
-                     title='Time',
-                     title_font=dict(size=22, color='black'),
-                     linecolor='#000',
-                     ticks="outside",
-                     tickfont=dict(size=18, color='black'),
-                     linewidth=2,
-                     tickwidth=2)
-    fig.update_yaxes(showgrid=False,
-                     title='Values',
-                     title_font=dict(size=22, color='black'),
-                     linecolor='#000',
-                     ticks="outside",
-                     tickfont=dict(size=18, color='black'),
-                     zeroline=False,
-                     linewidth=2,
-                     tickwidth=2)
-
-    fig.update_layout(title=title,
-                      title_font=dict(size=24, color='black'),
-                      plot_bgcolor="rgba(0,0,0,0)",
-                      paper_bgcolor='rgba(0,0,0,0)',
-                      legend=dict(font=dict(size=20, color='black'))
-                      )
-
-    fig.show(renderer="colab")
-
+def plot_ts(ts: np.ndarray, title: str = 'Временной ряд') -> None:
+    fig, ax = plt.subplots(figsize=(12, 3.5), layout='constrained')
+    ax.plot(np.arange(len(ts)), ts, color='#2463A5', linewidth=0.8)
+    ax.set(title=title, xlabel='Индекс отсчета или начала окна', ylabel='Значение')
+    _finish(fig)
 
 
 def plot_motifs(mp: dict, top_k_motifs: dict) -> None:
-    """
-    Plot the top-k motifs in time series and matrix profile
-
-    Parameters
-    ----------
-    mp: the matrix profile structure
-    top_k_motifs: top-k motifs
-    """
-
-    top_k = len(top_k_motifs['indices'])
-    n = len(mp['data']['ts1'])
-    m = mp['m']
-
-    num_cols = 2
-    num_rows = 2 + math.ceil(top_k / num_cols)
-
-    titles = ['Time Series with top-k motifs', 'Matrix Profile'] + [f"Top-{i+1} motifs" for i in range(top_k)]
-
-    fig = make_subplots(rows=num_rows, cols=num_cols,
-                        specs=[[{"colspan": 2}, None]]*2 + [[{}, {}]]*(num_rows-2),
-                        shared_xaxes=False,
-                        vertical_spacing=0.1,
-                        subplot_titles=titles)
-
-    fig.add_trace(go.Scatter(x=np.arange(n), y=mp['data']['ts1'], line=dict(color='grey'), name="Time Series"), row=1, col=1)
-
-    for i in range(top_k):
-        left_motif_idx = top_k_motifs['indices'][i][0]
-        right_motif_idx = top_k_motifs['indices'][i][1]
-        x = np.arange(left_motif_idx, right_motif_idx+m)
-        num_values_between_motif = right_motif_idx - (left_motif_idx+m)
-        y = np.concatenate((mp['data']['ts1'][left_motif_idx:left_motif_idx+m], np.full([1, num_values_between_motif], np.nan)[0], mp['data']['ts1'][right_motif_idx:right_motif_idx+m]))
-        color_i = i % len(px.colors.qualitative.Plotly)
-        fig.add_trace(go.Scatter(x=x, y=y, name=f"Top-{i+1} motifs", line=dict(color=px.colors.qualitative.Plotly[color_i])), row=1, col=1) #line=dict(color=px.colors.qualitative.Plotly[i+1])
-
-    fig.add_trace(go.Scatter(x=np.arange(n), y=mp['mp'], line=dict(color='grey', width=2), name="Matrix Profile"), row=2, col=1)
-
-    for i in range(top_k):
-        motifs_mp = [mp['mp'][motif_idx] for motif_idx in top_k_motifs['indices'][i]]
-        motifs_idx = list(top_k_motifs['indices'][i])
-        color_i = i % len(px.colors.qualitative.Plotly)
-        fig.add_trace(go.Scatter(x=motifs_idx, y=motifs_mp, mode='markers', marker=dict(symbol='star', color=px.colors.qualitative.Plotly[color_i], size=15), name=f"Top-{i+1} motifs"), row=2, col=1) # color='red',
-
-    for i in range(top_k):
-        col = int(i % num_cols) + 1
-        row = 2 + int(i / num_cols) + 1
-        left_motif_idx = top_k_motifs['indices'][i][0]
-        right_motif_idx = top_k_motifs['indices'][i][1]
-        color_i = i % len(px.colors.qualitative.Plotly)
-        fig.add_trace(go.Scatter(x=np.arange(m), y=mp['data']['ts1'][left_motif_idx:left_motif_idx+m], line=dict(color=px.colors.qualitative.Plotly[color_i]), showlegend = False), row=row, col=col)
-        fig.add_trace(go.Scatter(x=np.arange(m), y=mp['data']['ts1'][right_motif_idx:right_motif_idx+m], line=dict(color=px.colors.qualitative.Plotly[color_i]), showlegend = False), row=row, col=col)
-
-
-    fig.update_annotations(font=dict(size=22, color='black'))
-
-    fig.update_xaxes(showgrid=False,
-                     title_font=dict(size=22, color='black'),
-                     linecolor='#000',
-                     ticks='outside',
-                     tickfont=dict(size=18, color='black'),
-                     linewidth=2,
-                     tickwidth=2)
-    fig.update_yaxes(showgrid=False,
-                     title_font=dict(size=22, color='black'),
-                     linecolor='#000',
-                     ticks='outside',
-                     tickfont=dict(size=18), color='black',
-                     zeroline=False,
-                     linewidth=2,
-                     tickwidth=2)
-
-    fig.update_layout(title_font=dict(size=24, color='black'),
-                      plot_bgcolor='rgba(0,0,0,0)',
-                      paper_bgcolor='rgba(0,0,0,0)', 
-                      height=1300)
-
-    fig.show(renderer="colab")
+    pairs = top_k_motifs['indices']
+    count = len(pairs)
+    rows = 2 + max(1, math.ceil(count / 2))
+    fig = plt.figure(figsize=(14, 3 * rows), layout='constrained')
+    grid = fig.add_gridspec(rows, 2)
+    series_ax = fig.add_subplot(grid[0, :])
+    profile_ax = fig.add_subplot(grid[1, :])
+    data, m = mp['data']['ts1'], mp['m']
+    series_ax.plot(data, color='#AAAAAA', linewidth=0.7)
+    profile_ax.plot(np.arange(len(mp['mp'])), mp['mp'], color='#777777', linewidth=0.7)
+    colors = plt.get_cmap('tab10').colors
+    for rank, ((left, right), distance) in enumerate(zip(pairs, top_k_motifs['distances'])):
+        color = colors[rank % len(colors)]
+        pair_ax = fig.add_subplot(grid[2 + rank // 2, rank % 2])
+        for occurrence, idx in enumerate((left, right)):
+            series_ax.plot(np.arange(idx, idx + m), data[idx:idx + m], color=color, linewidth=1.5)
+            profile_ax.scatter(idx, mp['mp'][idx], color=color, marker='*', s=75, zorder=3)
+            values = data[idx:idx + m]
+            deviation = values.std()
+            normalized = (values - values.mean()) / deviation if deviation > 0 else np.zeros(m)
+            pair_ax.plot(normalized, color=color, linestyle='-' if occurrence == 0 else '--',
+                         linewidth=1.1, label=f'Начало {idx}')
+        pair_ax.set(title=f'Мотив {rank + 1}, расстояние {distance:.3f}',
+                    xlabel='Индекс внутри окна', ylabel='z-нормализованное значение')
+        pair_ax.legend(fontsize=9)
+    series_ax.set(title=f'Исходный ряд и {count} пар мотивов', xlabel='Индекс отсчета', ylabel='Потребление')
+    profile_ax.set(title='Матричный профиль и начала выбранных окон',
+                   xlabel='Индекс начала окна', ylabel='Расстояние до соседа')
+    _finish(fig)
 
 
 def plot_discords(mp: dict, top_k_discords: dict) -> None:
-    """
-    Plot the top-k discords in time series and matrix profile
-
-    Parameters
-    ----------
-    mp: matrix profile structure
-    top_k_discords: top-k discords
-    """
-
-    top_k = len(top_k_discords['indices'])
-    n = len(mp['data']['ts1'])
-    m = mp['m']
-
-    fig = make_subplots(rows=2, cols=1,
-                        shared_xaxes=True,
-                        vertical_spacing=0.02)
-
-    # plot time series with discords
-    fig.add_trace(go.Scatter(x=np.arange(n), y=mp['data']['ts1'], line=dict(color='#636EFA'), name="Time Series"), row=1, col=1)
-
-    for i in range(top_k):
-        discord_idx = top_k_discords['indices'][i]
-        fig.add_trace(go.Scatter(x=np.arange(discord_idx, discord_idx+m), y=mp['data']['ts1'][discord_idx:discord_idx+m], line=dict(color='red'), name=f"Top-{i+1} discord"), row=1, col=1)
-
-    # plot mp
-    discords_idx = top_k_discords['indices']
-    discords_mp = [mp['mp'][discord_idx] for discord_idx in discords_idx]
-
-    fig.add_trace(go.Scatter(x=np.arange(n), y=mp['mp'], line=dict(color='#636EFA', width=2), name="Matrix Profile"), row=2, col=1)
-    fig.add_trace(go.Scatter(x=discords_idx, y=discords_mp, mode='markers', marker=dict(symbol='star', color='red', size=7), name="Discords"), row=2, col=1)
-
-    fig.update_layout(title_text="Top-k discords in time series")
-
-    fig.update_xaxes(showgrid=False,
-                     title_font=dict(size=22, color='black'),
-                     linecolor='#000',
-                     ticks="outside",
-                     tickfont=dict(size=18, color='black'),
-                     linewidth=2,
-                     tickwidth=2)
-    fig.update_yaxes(showgrid=False,
-                     title_font=dict(size=22, color='black'),
-                     linecolor='#000',
-                     ticks="outside",
-                     tickfont=dict(size=18), color='black',
-                     zeroline=False,
-                     linewidth=2,
-                     tickwidth=2)
-
-    fig.update_layout(title_font=dict(size=24, color='black'),
-                      plot_bgcolor="rgba(0,0,0,0)",
-                      paper_bgcolor='rgba(0,0,0,0)')
-
-    fig.show(renderer="colab")
+    fig, axes = plt.subplots(2, 1, figsize=(13, 7), layout='constrained', sharex=True)
+    data, m = mp['data']['ts1'], mp['m']
+    axes[0].plot(data, color='#2463A5', linewidth=0.8, label='Исходный ряд')
+    for rank, idx in enumerate(top_k_discords['indices']):
+        axes[0].plot(np.arange(idx, idx + m), data[idx:idx + m], color='#C52E32',
+                     linewidth=1.2, label='Диссонансы' if rank == 0 else None)
+    axes[0].set(title=f"Такси NY и top-{len(top_k_discords['indices'])} диссонансов", ylabel='Значение ряда')
+    axes[0].legend()
+    axes[1].plot(np.arange(len(mp['mp'])), mp['mp'], color='#2463A5', linewidth=0.8)
+    axes[1].scatter(top_k_discords['indices'], top_k_discords['distances'],
+                    color='#C52E32', marker='*', s=65, zorder=3)
+    axes[1].set(title='Матричный профиль и выбранные максимумы',
+                xlabel='Индекс начала окна', ylabel='Расстояние до соседа')
+    _finish(fig)
 
 
 def plot_segmentation(mp: dict, threshold: float) -> None:
-    """
-    Plot the segmented time series
-    
-    Parameters
-    ----------
-    mp: the matrix profile structure
-    threshold: threshold
-    """
-
-    n = len(mp['data']['ts1'])
-
-    fig = make_subplots(rows=2, cols=1,
-                        shared_xaxes=True,
-                        vertical_spacing=0.15,
-                        subplot_titles=("The segmented time series", "Matrix Profile"))
-
-    fig.add_trace(go.Scatter(x=np.arange(n), y=mp['data']['ts1'], line=dict(color='#636EFA'), name="Time Series", showlegend = False), row=1, col=1)
-    fig.add_trace(go.Scatter(x=np.arange(n), y=mp['mp'], line=dict(color='#636EFA', width=2), name="Matrix Profile", showlegend = False), row=2, col=1)
-
-    fig.add_hline(y=threshold, line_width=3, line_dash="dash", line_color="red", row=2, col=1)
-
-    fig.update_annotations(font=dict(size=22, color='black'))
-    fig.update_xaxes(showgrid=False,
-                     title_font=dict(size=22, color='black'),
-                     linecolor='#000',
-                     ticks="outside",
-                     tickfont=dict(size=18, color='black'),
-                     linewidth=2,
-                     tickwidth=2)
-    fig.update_yaxes(showgrid=False,
-                     title_font=dict(size=22, color='black'),
-                     linecolor='#000',
-                     ticks="outside",
-                     tickfont=dict(size=18), color='black',
-                     zeroline=False,
-                     linewidth=2,
-                     tickwidth=2)
-
-    fig.update_layout(title_font=dict(size=24, color='black'),
-                      plot_bgcolor="rgba(0,0,0,0)",
-                      paper_bgcolor='rgba(0,0,0,0)', height=700)
-
-    fig.show(renderer="colab")
+    fig, axes = plt.subplots(2, 1, figsize=(13, 7), layout='constrained', sharex=True)
+    data, values, m = mp['data']['ts1'], mp['mp'], mp['m']
+    centers = np.arange(len(values)) + m // 2
+    stairs = values < threshold
+    axes[0].plot(data, color='#BBBBBB', linewidth=0.5)
+    for mask, color, label in [(~stairs, '#2463A5', 'Ходьба'), (stairs, '#D66B12', 'Лестница')]:
+        axes[0].plot(centers, np.where(mask, data[centers], np.nan),
+                     color=color, linewidth=0.8, label=label)
+    axes[0].set(title='Сегментация PAMAP по центрам окон', ylabel='Сигнал акселерометра')
+    axes[0].legend()
+    axes[1].plot(centers, values, color='#2463A5', linewidth=0.8, label='Матричный профиль')
+    axes[1].axhline(threshold, color='#C52E32', linestyle='--', label=f'Порог {threshold:.3f}')
+    axes[1].set(title='Ниже порога: повторяющаяся активность на лестнице',
+                xlabel='Индекс центра окна', ylabel='Расстояние до соседа')
+    axes[1].legend()
+    _finish(fig)
